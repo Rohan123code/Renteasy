@@ -11,5 +11,6 @@ router.get('/stats', adminController.getDashboardStats);
 router.get('/users', adminController.getUsers);
 router.put('/users/:id/role', adminController.updateUserRole);
 router.get('/orders', adminController.getAllOrders);
+router.put('/orders/:id/status', adminController.updateOrderStatus);
 
 module.exports = router;

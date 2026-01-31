@@ -77,7 +77,8 @@ const orderSchema = new mongoose.Schema({
   },
   totalAmount: { type: Number, required: true },
   totalDeposit: { type: Number, required: true },
-  createdAt: { type: Date, default: Date.now }
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
 });
 
 // ==================== MODEL METHODS ====================
@@ -93,6 +94,12 @@ userSchema.pre('save', async function(next) {
 userSchema.methods.comparePassword = async function(candidatePassword) {
   return await bcrypt.compare(candidatePassword, this.password);
 };
+
+// Update updatedAt before saving
+orderSchema.pre('save', function(next) {
+  this.updatedAt = Date.now();
+  next();
+});
 
 // ==================== CREATE MODELS ====================
 const User = mongoose.model('User', userSchema);
@@ -543,7 +550,7 @@ app.get('/api/admin/stats', authMiddleware, adminMiddleware, async (req, res) =>
       Order.countDocuments(),
       Order.countDocuments({ status: 'active' }),
       Order.aggregate([
-        { $match: { status: { $in: ['active', 'delivered'] } } },
+        { $match: { status: { $in: ['active', 'delivered', 'confirmed', 'completed'] } } },
         { $group: { _id: null, total: { $sum: '$totalAmount' } } }
       ])
     ]);
@@ -563,12 +570,12 @@ app.get('/api/admin/stats', authMiddleware, adminMiddleware, async (req, res) =>
   }
 });
 
-// Get all orders (admin)
+// Get all orders (admin) - UPDATED to include more fields
 app.get('/api/admin/orders', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const orders = await Order.find()
-      .populate('user', 'name email')
-      .populate('products.product', 'name')
+      .populate('user', 'name email phone')
+      .populate('products.product', 'name images monthlyRent securityDeposit')
       .sort({ createdAt: -1 });
     
     res.json(orders);
@@ -578,108 +585,86 @@ app.get('/api/admin/orders', authMiddleware, adminMiddleware, async (req, res) =
   }
 });
 
-// ========== SEED DATABASE ==========
-// Seed database with sample data
-app.post('/api/seed', async (req, res) => {
+// ========== ADD THIS ROUTE: Update order status (admin only) ==========
+app.put('/api/admin/orders/:id/status', authMiddleware, adminMiddleware, async (req, res) => {
   try {
-    // Clear existing data
-    await Product.deleteMany({});
-    await User.deleteMany({ email: { $in: ['admin@renteasy.com', 'user@test.com'] } });
+    const { status } = req.body;
     
-    // Sample products
-    const sampleProducts = [
-      {
-        name: 'Queen Size Bed with Memory Foam Mattress',
-        description: 'Premium queen size bed with orthopedic memory foam mattress for ultimate comfort and support.',
-        category: 'furniture',
-        subcategory: 'bed',
-        monthlyRent: 1200,
-        securityDeposit: 5000,
-        stock: 5,
-        images: ['https://images.unsplash.com/photo-1505693416388-ac5ce068fe85?ixlib=rb-4.0.3&auto=format&fit=crop&w=800&q=80'],
-        specifications: {
-          'Size': 'Queen (60" x 80")',
-          'Material': 'Solid Wood with Memory Foam',
-          'Color': 'Dark Brown'
-        }
-      },
-      {
-        name: '3-Seater Fabric Sofa Set',
-        description: 'Modern 3-seater sofa set with soft fabric upholstery and comfortable cushions.',
-        category: 'furniture',
-        subcategory: 'sofa',
-        monthlyRent: 1500,
-        securityDeposit: 8000,
-        stock: 3,
-        images: ['https://images.unsplash.com/photo-1555041469-a586c61ea9bc?ixlib=rb-4.0.3&auto=format&fit=crop&w=800&q=80'],
-        specifications: {
-          'Seating Capacity': '3 Persons',
-          'Material': 'Premium Fabric',
-          'Color': 'Charcoal Gray'
-        }
-      },
-      {
-        name: '200L Single Door Refrigerator',
-        description: 'Energy-efficient refrigerator with separate freezer compartment.',
-        category: 'appliance',
-        subcategory: 'fridge',
-        monthlyRent: 1000,
-        securityDeposit: 6000,
-        stock: 4,
-        images: ['https://images.unsplash.com/photo-1571175443880-49e1d25b2bc5?ixlib=rb-4.0.3&auto=format&fit=crop&w=800&q=80'],
-        specifications: {
-          'Capacity': '200 Liters',
-          'Type': 'Single Door',
-          'Energy Rating': '3 Star'
-        }
-      },
-      {
-        name: '32-inch HD Smart TV',
-        description: 'Smart TV with built-in streaming apps like Netflix, Prime Video, and YouTube.',
-        category: 'appliance',
-        subcategory: 'tv',
-        monthlyRent: 800,
-        securityDeposit: 4000,
-        stock: 6,
-        images: ['https://images.unsplash.com/photo-1593359677879-a4bb92f829d1?ixlib=rb-4.0.3&auto=format&fit=crop&w=800&q=80'],
-        specifications: {
-          'Screen Size': '32 inches',
-          'Resolution': 'HD Ready (1366x768)',
-          'Smart Features': 'WiFi, Netflix, Prime Video'
-        }
-      }
-    ];
+    // Validate status against your schema enum
+    const allowedStatuses = ['pending', 'confirmed', 'delivered', 'active', 'completed', 'cancelled'];
+    if (!allowedStatuses.includes(status)) {
+      return res.status(400).json({ message: 'Invalid status value' });
+    }
     
-    // Insert products
-    await Product.insertMany(sampleProducts);
+    const order = await Order.findById(req.params.id);
     
-    // Create admin user
-    await User.create({
-      name: 'Admin User',
-      email: 'admin@renteasy.com',
-      password: 'admin123',
-      phone: '9876543210',
-      role: 'admin'
+    if (!order) {
+      return res.status(404).json({ message: 'Order not found' });
+    }
+    
+    // Update order status
+    order.status = status;
+    await order.save();
+    
+    // Get populated order for response
+    const updatedOrder = await Order.findById(order._id)
+      .populate('user', 'name email phone')
+      .populate('products.product', 'name images monthlyRent securityDeposit');
+    
+    res.json({
+      success: true,
+      message: `Order status updated to ${status}`,
+      order: updatedOrder
     });
+  } catch (error) {
+    console.error('Update order status error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// ========== ADD THESE ADMIN USER MANAGEMENT ROUTES ==========
+// Get all users (admin)
+app.get('/api/admin/users', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const users = await User.find().select('-password').sort({ createdAt: -1 });
+    res.json(users);
+  } catch (error) {
+    console.error('Get users error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Update user role (admin)
+app.put('/api/admin/users/:id/role', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const { role } = req.body;
     
-    // Create test user
-    await User.create({
-      name: 'Test User',
-      email: 'user@test.com',
-      password: 'user123',
-      phone: '9876543211'
-    });
+    if (!['user', 'admin'].includes(role)) {
+      return res.status(400).json({ message: 'Invalid role' });
+    }
+    
+    const user = await User.findById(req.params.id);
+    
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+    
+    user.role = role;
+    await user.save();
     
     res.json({ 
-      message: '✅ Database seeded successfully!',
-      products: sampleProducts.length,
-      admin: 'admin@renteasy.com / admin123',
-      user: 'user@test.com / user123'
+      success: true,
+      message: 'User role updated successfully',
+      user: {
+        _id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role
+      }
     });
-    
   } catch (error) {
-    console.error('Seed error:', error);
-    res.status(500).json({ message: 'Server error during seeding' });
+    console.error('Update user role error:', error);
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
@@ -694,17 +679,10 @@ const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📡 API Base URL: http://localhost:${PORT}`);
-  console.log(`\n📋 Available Endpoints:`);
-  console.log(`   Home: GET http://localhost:${PORT}/`);
-  console.log(`   Products: GET http://localhost:${PORT}/api/products`);
-  console.log(`   Categories: GET http://localhost:${PORT}/api/products/categories`);
-  console.log(`   Register: POST http://localhost:${PORT}/api/auth/register`);
-  console.log(`   Login: POST http://localhost:${PORT}/api/auth/login`);
-  console.log(`   Admin Create Product: POST http://localhost:${PORT}/api/admin/products`);
-  console.log(`   Admin Products: GET http://localhost:${PORT}/api/admin/products`);
-  console.log(`   Orders: GET http://localhost:${PORT}/api/orders`);
-  console.log(`   Seed DB: POST http://localhost:${PORT}/api/seed`);
-  console.log(`\n👤 Test Credentials:`);
-  console.log(`   Admin: admin@renteasy.com / admin123`);
-  console.log(`   User: user@test.com / user123`);
+  console.log('📊 Available Admin Endpoints:');
+  console.log(`   GET  http://localhost:${PORT}/api/admin/orders`);
+  console.log(`   PUT  http://localhost:${PORT}/api/admin/orders/:id/status`);
+  console.log(`   GET  http://localhost:${PORT}/api/admin/users`);
+  console.log(`   PUT  http://localhost:${PORT}/api/admin/users/:id/role`);
+  console.log(`   GET  http://localhost:${PORT}/api/admin/stats`);
 });

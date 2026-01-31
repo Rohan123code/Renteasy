@@ -26,7 +26,7 @@ exports.getDashboardStats = async (req, res) => {
       Order.countDocuments({ status: 'active' }),
       Maintenance.countDocuments({ status: 'pending' }),
       Order.aggregate([
-        { $match: { status: { $in: ['confirmed', 'delivered', 'active'] } } },
+        { $match: { status: { $in: ['confirmed', 'delivered', 'active', 'completed'] } } },
         { $group: { _id: null, total: { $sum: '$totalAmount' } } },
       ]),
     ]);
@@ -34,6 +34,7 @@ exports.getDashboardStats = async (req, res) => {
     // Recent orders
     const recentOrders = await Order.find()
       .populate('user', 'name email')
+      .populate('products.product', 'name')
       .sort({ createdAt: -1 })
       .limit(5);
     
@@ -107,13 +108,56 @@ exports.getAllOrders = async (req, res) => {
     }
     
     const orders = await Order.find()
-      .populate('user', 'name email')
-      .populate('products.product', 'name')
+      .populate('user', 'name email phone')
+      .populate('products.product', 'name images monthlyRent securityDeposit')
       .sort({ createdAt: -1 });
     
     res.json(orders);
   } catch (error) {
     console.error(error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Update order status
+// @route   PUT /api/admin/orders/:id/status
+// @access  Private/Admin
+exports.updateOrderStatus = async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Not authorized' });
+    }
+    
+    const { status } = req.body;
+    
+    // Validate status against your schema enum
+    const allowedStatuses = ['pending', 'confirmed', 'delivered', 'active', 'completed', 'cancelled'];
+    if (!allowedStatuses.includes(status)) {
+      return res.status(400).json({ message: 'Invalid status value' });
+    }
+    
+    const order = await Order.findById(req.params.id);
+    
+    if (!order) {
+      return res.status(404).json({ message: 'Order not found' });
+    }
+    
+    // Update order status
+    order.status = status;
+    await order.save();
+    
+    // Get populated order for response
+    const updatedOrder = await Order.findById(order._id)
+      .populate('user', 'name email phone')
+      .populate('products.product', 'name images monthlyRent securityDeposit');
+    
+    res.json({
+      success: true,
+      message: 'Order status updated successfully',
+      order: updatedOrder
+    });
+  } catch (error) {
+    console.error('Error updating order status:', error);
     res.status(500).json({ message: 'Server error' });
   }
 };

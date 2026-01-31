@@ -8,8 +8,9 @@ const OrderManagement = () => {
   const [orders, setOrders] = useState([])
   const [loading, setLoading] = useState(true)
   const [selectedOrder, setSelectedOrder] = useState(null)
-  const [filter, setFilter] = useState('all') // all, pending, active, delivered, cancelled
+  const [filter, setFilter] = useState('all')
   const [searchTerm, setSearchTerm] = useState('')
+  const [updatingOrderId, setUpdatingOrderId] = useState(null)
 
   useEffect(() => {
     fetchOrders()
@@ -44,29 +45,92 @@ const OrderManagement = () => {
 
   const handleStatusUpdate = async (orderId, newStatus) => {
     try {
-      // For now, update locally - you'll need to add this endpoint to your backend
-      // await api.put(`/admin/orders/${orderId}/status`, { status: newStatus })
+      setUpdatingOrderId(orderId)
       
-      // Temporary: Update local state
-      setOrders(orders.map(order => 
-        order._id === orderId ? { ...order, status: newStatus } : order
-      ))
+      // Make API call to update order status
+      const response = await api.put(`/admin/orders/${orderId}/status`, { 
+        status: newStatus 
+      })
       
-      toast.success(`Order status updated to ${newStatus}`)
+      // Update the orders list with the updated order
+      const updatedOrder = response.data.order
+      setOrders(prevOrders => 
+        prevOrders.map(order => 
+          order._id === orderId ? updatedOrder : order
+        )
+      )
+      
+      // If the modal is open for this order, update it too
+      if (selectedOrder && selectedOrder._id === orderId) {
+        setSelectedOrder(updatedOrder)
+      }
+      
+      toast.success(response.data.message || `Order status updated to ${newStatus}`)
     } catch (error) {
       console.error('Failed to update order status:', error)
-      toast.error('Failed to update order status')
+      
+      if (error.response?.status === 401) {
+        toast.error('Session expired. Please login again.')
+        window.location.href = '/login'
+        return
+      }
+      
+      if (error.response?.status === 403) {
+        toast.error('Admin access required')
+        return
+      }
+      
+      if (error.response?.status === 400) {
+        toast.error(error.response.data.message || 'Invalid status value')
+        return
+      }
+      
+      toast.error(error.response?.data?.message || 'Failed to update order status')
+    } finally {
+      setUpdatingOrderId(null)
+    }
+  }
+
+  const handleConfirmOrder = async (orderId) => {
+    if (window.confirm('Are you sure you want to confirm this order?')) {
+      await handleStatusUpdate(orderId, 'confirmed')
+    }
+  }
+
+  const handleCancelOrder = async (orderId) => {
+    if (window.confirm('Are you sure you want to cancel this order?')) {
+      await handleStatusUpdate(orderId, 'cancelled')
+    }
+  }
+
+  const handleDeliverOrder = async (orderId) => {
+    if (window.confirm('Mark this order as delivered?')) {
+      await handleStatusUpdate(orderId, 'delivered')
+    }
+  }
+
+  const handleMarkAsActive = async (orderId) => {
+    if (window.confirm('Mark this order as active?')) {
+      await handleStatusUpdate(orderId, 'active')
+    }
+  }
+
+  const handleCompleteOrder = async (orderId) => {
+    if (window.confirm('Mark this order as completed?')) {
+      await handleStatusUpdate(orderId, 'completed')
     }
   }
 
   const getStatusColor = (status) => {
     switch (status) {
-      case 'active':
+      case 'confirmed':
         return 'bg-green-100 text-green-800'
       case 'pending':
         return 'bg-yellow-100 text-yellow-800'
       case 'delivered':
         return 'bg-blue-100 text-blue-800'
+      case 'active':
+        return 'bg-indigo-100 text-indigo-800'
       case 'completed':
         return 'bg-gray-100 text-gray-800'
       case 'cancelled':
@@ -76,7 +140,32 @@ const OrderManagement = () => {
     }
   }
 
+  const getStatusDisplayText = (status) => {
+    const statusMap = {
+      'pending': 'Pending',
+      'confirmed': 'Confirmed',
+      'delivered': 'Delivered',
+      'active': 'Active',
+      'completed': 'Completed',
+      'cancelled': 'Cancelled'
+    }
+    return statusMap[status] || status
+  }
+
+  const getAvailableActions = (status) => {
+    const actions = {
+      'pending': ['confirm', 'cancel'],
+      'confirmed': ['deliver', 'cancel'],
+      'delivered': ['activate', 'cancel'],
+      'active': ['complete', 'cancel'],
+      'completed': ['cancel'],
+      'cancelled': []
+    }
+    return actions[status] || []
+  }
+
   const formatDate = (dateString) => {
+    if (!dateString) return 'Not set'
     return new Date(dateString).toLocaleDateString('en-IN', {
       day: 'numeric',
       month: 'short',
@@ -85,6 +174,7 @@ const OrderManagement = () => {
   }
 
   const formatCurrency = (amount) => {
+    if (!amount) return '₹0'
     return new Intl.NumberFormat('en-IN', {
       style: 'currency',
       currency: 'INR',
@@ -94,12 +184,10 @@ const OrderManagement = () => {
 
   // Filter orders based on status and search term
   const filteredOrders = orders.filter(order => {
-    // Status filter
     if (filter !== 'all' && order.status !== filter) {
       return false
     }
     
-    // Search filter
     if (searchTerm) {
       const searchLower = searchTerm.toLowerCase()
       return (
@@ -119,11 +207,13 @@ const OrderManagement = () => {
   const stats = {
     total: orders.length,
     pending: orders.filter(o => o.status === 'pending').length,
+    confirmed: orders.filter(o => o.status === 'confirmed').length,
+    delivered: orders.filter(o => o.status === 'delivered').length,
     active: orders.filter(o => o.status === 'active').length,
-    delivered: orders.filter(o => o.status === 'delivered' || o.status === 'completed').length,
+    completed: orders.filter(o => o.status === 'completed').length,
     cancelled: orders.filter(o => o.status === 'cancelled').length,
     totalRevenue: orders
-      .filter(o => ['active', 'delivered', 'completed'].includes(o.status))
+      .filter(o => ['confirmed', 'delivered', 'active', 'completed'].includes(o.status))
       .reduce((sum, order) => sum + (order.totalAmount || 0), 0)
   }
 
@@ -145,15 +235,16 @@ const OrderManagement = () => {
           </div>
           <button
             onClick={fetchOrders}
-            className="flex items-center space-x-2 text-primary-600 hover:text-primary-800"
+            className="flex items-center space-x-2 text-primary-600 hover:text-primary-800 disabled:opacity-50"
+            disabled={loading}
           >
-            <FiRefreshCw className="w-5 h-5" />
-            <span>Refresh</span>
+            <FiRefreshCw className={`w-5 h-5 ${loading ? 'animate-spin' : ''}`} />
+            <span>{loading ? 'Refreshing...' : 'Refresh'}</span>
           </button>
         </div>
 
         {/* Order Statistics */}
-        <div className="grid grid-cols-2 md:grid-cols-6 gap-4 mb-6">
+        <div className="grid grid-cols-2 md:grid-cols-7 gap-4 mb-6">
           <div className="bg-white rounded-lg shadow p-4">
             <div className="text-2xl font-bold text-primary-600">{stats.total}</div>
             <div className="text-sm text-gray-600">Total Orders</div>
@@ -163,12 +254,16 @@ const OrderManagement = () => {
             <div className="text-sm text-gray-600">Pending</div>
           </div>
           <div className="bg-white rounded-lg shadow p-4">
-            <div className="text-2xl font-bold text-green-600">{stats.active}</div>
-            <div className="text-sm text-gray-600">Active</div>
+            <div className="text-2xl font-bold text-green-600">{stats.confirmed}</div>
+            <div className="text-sm text-gray-600">Confirmed</div>
           </div>
           <div className="bg-white rounded-lg shadow p-4">
             <div className="text-2xl font-bold text-blue-600">{stats.delivered}</div>
             <div className="text-sm text-gray-600">Delivered</div>
+          </div>
+          <div className="bg-white rounded-lg shadow p-4">
+            <div className="text-2xl font-bold text-indigo-600">{stats.active}</div>
+            <div className="text-sm text-gray-600">Active</div>
           </div>
           <div className="bg-white rounded-lg shadow p-4">
             <div className="text-2xl font-bold text-red-600">{stats.cancelled}</div>
@@ -190,7 +285,7 @@ const OrderManagement = () => {
                 Filter by Status
               </label>
               <div className="flex flex-wrap gap-2">
-                {['all', 'pending', 'active', 'delivered', 'cancelled'].map((status) => (
+                {['all', 'pending', 'confirmed', 'delivered', 'active', 'completed', 'cancelled'].map((status) => (
                   <button
                     key={status}
                     onClick={() => setFilter(status)}
@@ -256,111 +351,152 @@ const OrderManagement = () => {
                 </tr>
               </thead>
               <tbody>
-                {filteredOrders.map((order) => (
-                  <tr key={order._id} className="border-b hover:bg-gray-50">
-                    <td className="py-4 px-6">
-                      <div className="font-mono text-sm font-medium">
-                        #{order._id.slice(-8).toUpperCase()}
-                      </div>
-                      <div className="text-xs text-gray-500">
-                        {formatDate(order.createdAt)}
-                      </div>
-                    </td>
-                    <td className="py-4 px-6">
-                      <div className="flex items-center space-x-2">
-                        <div className="w-8 h-8 bg-gray-100 rounded-full flex items-center justify-center">
-                          <FiUser className="w-4 h-4 text-gray-600" />
+                {filteredOrders.map((order) => {
+                  const isUpdating = updatingOrderId === order._id
+                  const availableActions = getAvailableActions(order.status)
+                  
+                  return (
+                    <tr key={order._id} className="border-b hover:bg-gray-50">
+                      <td className="py-4 px-6">
+                        <div className="font-mono text-sm font-medium">
+                          #{order._id.slice(-8).toUpperCase()}
                         </div>
-                        <div>
-                          <div className="font-medium">{order.user?.name || 'Unknown User'}</div>
-                          <div className="text-sm text-gray-600">{order.user?.email || 'No email'}</div>
+                        <div className="text-xs text-gray-500">
+                          {formatDate(order.createdAt)}
                         </div>
-                      </div>
-                    </td>
-                    <td className="py-4 px-6">
-                      <div className="text-sm space-y-1">
-                        {order.products?.slice(0, 2).map((item, index) => (
-                          <div key={index} className="flex items-center space-x-2">
-                            <div className="w-6 h-6 rounded overflow-hidden">
-                              <img
-                                src={item.product?.images?.[0] || 'https://via.placeholder.com/24x24'}
-                                alt={item.product?.name}
-                                className="w-full h-full object-cover"
-                              />
+                      </td>
+                      <td className="py-4 px-6">
+                        <div className="flex items-center space-x-2">
+                          <div className="w-8 h-8 bg-gray-100 rounded-full flex items-center justify-center">
+                            <FiUser className="w-4 h-4 text-gray-600" />
+                          </div>
+                          <div>
+                            <div className="font-medium">{order.user?.name || 'Unknown User'}</div>
+                            <div className="text-sm text-gray-600">{order.user?.email || 'No email'}</div>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="py-4 px-6">
+                        <div className="text-sm space-y-1">
+                          {order.products?.slice(0, 2).map((item, index) => (
+                            <div key={index} className="flex items-center space-x-2">
+                              <div className="w-6 h-6 rounded overflow-hidden">
+                                <img
+                                  src={item.product?.images?.[0] || 'https://via.placeholder.com/24x24'}
+                                  alt={item.product?.name}
+                                  className="w-full h-full object-cover"
+                                />
+                              </div>
+                              <span className="truncate max-w-[150px]">
+                                {item.quantity} × {item.product?.name || 'Unknown Product'}
+                              </span>
                             </div>
-                            <span className="truncate max-w-[150px]">
-                              {item.quantity} × {item.product?.name || 'Unknown Product'}
-                            </span>
-                          </div>
-                        ))}
-                        {order.products?.length > 2 && (
-                          <div className="text-xs text-gray-500">
-                            +{order.products.length - 2} more items
-                          </div>
-                        )}
-                      </div>
-                    </td>
-                    <td className="py-4 px-6">
-                      <div className="font-bold">{formatCurrency(order.totalAmount)}</div>
-                      <div className="text-xs text-gray-500">
-                        Deposit: {formatCurrency(order.totalDeposit || 0)}
-                      </div>
-                    </td>
-                    <td className="py-4 px-6">
-                      <span className={`px-3 py-1 rounded-full text-xs font-medium ${getStatusColor(order.status)}`}>
-                        {order.status.charAt(0).toUpperCase() + order.status.slice(1)}
-                      </span>
-                    </td>
-                    <td className="py-4 px-6">
-                      <div className="flex items-center space-x-1">
-                        <FiCalendar className="w-4 h-4 text-gray-400" />
-                        <div className="text-sm">
-                          {order.deliveryDate ? formatDate(order.deliveryDate) : 'Not set'}
+                          ))}
+                          {order.products?.length > 2 && (
+                            <div className="text-xs text-gray-500">
+                              +{order.products.length - 2} more items
+                            </div>
+                          )}
                         </div>
-                      </div>
-                    </td>
-                    <td className="py-4 px-6">
-                      <div className="flex space-x-2">
-                        <button
-                          onClick={() => setSelectedOrder(order)}
-                          className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-                          title="View Details"
-                        >
-                          <FiEye className="w-4 h-4" />
-                        </button>
-                        
-                        {order.status === 'pending' && (
-                          <>
-                            <button
-                              onClick={() => handleStatusUpdate(order._id, 'active')}
-                              className="p-2 text-green-600 hover:bg-green-50 rounded-lg transition-colors"
-                              title="Confirm Order"
-                            >
-                              <FiCheckCircle className="w-4 h-4" />
-                            </button>
-                            <button
-                              onClick={() => handleStatusUpdate(order._id, 'cancelled')}
-                              className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                              title="Cancel Order"
-                            >
-                              <FiXCircle className="w-4 h-4" />
-                            </button>
-                          </>
-                        )}
-                        
-                        {order.status === 'active' && (
+                      </td>
+                      <td className="py-4 px-6">
+                        <div className="font-bold">{formatCurrency(order.totalAmount)}</div>
+                        <div className="text-xs text-gray-500">
+                          Deposit: {formatCurrency(order.totalDeposit || 0)}
+                        </div>
+                      </td>
+                      <td className="py-4 px-6">
+                        <span className={`px-3 py-1 rounded-full text-xs font-medium ${getStatusColor(order.status)}`}>
+                          {getStatusDisplayText(order.status)}
+                        </span>
+                      </td>
+                      <td className="py-4 px-6">
+                        <div className="flex items-center space-x-1">
+                          <FiCalendar className="w-4 h-4 text-gray-400" />
+                          <div className="text-sm">
+                            {formatDate(order.deliveryDate)}
+                          </div>
+                        </div>
+                      </td>
+                      <td className="py-4 px-6">
+                        <div className="flex space-x-2">
                           <button
-                            onClick={() => handleStatusUpdate(order._id, 'delivered')}
-                            className="px-3 py-1 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-                            title="Mark as Delivered"
+                            onClick={() => setSelectedOrder(order)}
+                            className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors disabled:opacity-50"
+                            title="View Details"
+                            disabled={isUpdating}
                           >
-                            Deliver
+                            <FiEye className="w-4 h-4" />
                           </button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                          
+                          {/* Dynamic action buttons based on status */}
+                          {availableActions.includes('confirm') && (
+                            <button
+                              onClick={() => handleConfirmOrder(order._id)}
+                              className="p-2 text-green-600 hover:bg-green-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                              title="Confirm Order"
+                              disabled={isUpdating}
+                            >
+                              {isUpdating ? (
+                                <LoadingSpinner size="small" />
+                              ) : (
+                                <FiCheckCircle className="w-4 h-4" />
+                              )}
+                            </button>
+                          )}
+                          
+                          {availableActions.includes('deliver') && (
+                            <button
+                              onClick={() => handleDeliverOrder(order._id)}
+                              className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                              title="Mark as Delivered"
+                              disabled={isUpdating}
+                            >
+                              Deliver
+                            </button>
+                          )}
+                          
+                          {availableActions.includes('activate') && (
+                            <button
+                              onClick={() => handleMarkAsActive(order._id)}
+                              className="p-2 text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                              title="Mark as Active"
+                              disabled={isUpdating}
+                            >
+                              Activate
+                            </button>
+                          )}
+                          
+                          {availableActions.includes('complete') && (
+                            <button
+                              onClick={() => handleCompleteOrder(order._id)}
+                              className="p-2 text-gray-600 hover:bg-gray-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                              title="Mark as Completed"
+                              disabled={isUpdating}
+                            >
+                              Complete
+                            </button>
+                          )}
+                          
+                          {availableActions.includes('cancel') && (
+                            <button
+                              onClick={() => handleCancelOrder(order._id)}
+                              className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                              title="Cancel Order"
+                              disabled={isUpdating}
+                            >
+                              {isUpdating ? (
+                                <LoadingSpinner size="small" />
+                              ) : (
+                                <FiXCircle className="w-4 h-4" />
+                              )}
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>
@@ -379,7 +515,8 @@ const OrderManagement = () => {
                 </div>
                 <button
                   onClick={() => setSelectedOrder(null)}
-                  className="text-gray-400 hover:text-gray-600 text-2xl"
+                  className="text-gray-400 hover:text-gray-600 text-2xl disabled:opacity-50"
+                  disabled={updatingOrderId === selectedOrder._id}
                 >
                   ✕
                 </button>
@@ -396,14 +533,14 @@ const OrderManagement = () => {
                     <div className="text-sm text-gray-600 mb-1">Status</div>
                     <div>
                       <span className={`px-3 py-1 rounded-full text-sm font-medium ${getStatusColor(selectedOrder.status)}`}>
-                        {selectedOrder.status.charAt(0).toUpperCase() + selectedOrder.status.slice(1)}
+                        {getStatusDisplayText(selectedOrder.status)}
                       </span>
                     </div>
                   </div>
                   <div className="bg-gray-50 p-4 rounded-lg">
                     <div className="text-sm text-gray-600 mb-1">Delivery Date</div>
                     <div className="font-medium">
-                      {selectedOrder.deliveryDate ? formatDate(selectedOrder.deliveryDate) : 'Not set'}
+                      {formatDate(selectedOrder.deliveryDate)}
                     </div>
                   </div>
                 </div>
@@ -423,10 +560,6 @@ const OrderManagement = () => {
                       <div>
                         <div className="text-sm text-gray-600">Email</div>
                         <div className="font-medium">{selectedOrder.user?.email || 'No email'}</div>
-                      </div>
-                      <div>
-                        <div className="text-sm text-gray-600">Phone</div>
-                        <div className="font-medium">{selectedOrder.user?.phone || 'No phone'}</div>
                       </div>
                     </div>
                   </div>
@@ -507,13 +640,70 @@ const OrderManagement = () => {
               <div className="flex justify-end space-x-4 mt-8 pt-6 border-t">
                 <button
                   onClick={() => setSelectedOrder(null)}
-                  className="btn-outline"
+                  className="btn-outline disabled:opacity-50 disabled:cursor-not-allowed"
+                  disabled={updatingOrderId === selectedOrder._id}
                 >
                   Close
                 </button>
-                <button className="btn-primary">
-                  Update Order
-                </button>
+                
+                {/* Action buttons in modal */}
+                <div className="flex space-x-2">
+                  {getAvailableActions(selectedOrder.status).map((action) => {
+                    const buttons = {
+                      'confirm': (
+                        <button
+                          key="confirm"
+                          onClick={() => handleConfirmOrder(selectedOrder._id)}
+                          className="btn-success disabled:opacity-50 disabled:cursor-not-allowed"
+                          disabled={updatingOrderId === selectedOrder._id}
+                        >
+                          {updatingOrderId === selectedOrder._id ? 'Processing...' : 'Confirm Order'}
+                        </button>
+                      ),
+                      'deliver': (
+                        <button
+                          key="deliver"
+                          onClick={() => handleDeliverOrder(selectedOrder._id)}
+                          className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
+                          disabled={updatingOrderId === selectedOrder._id}
+                        >
+                          {updatingOrderId === selectedOrder._id ? 'Processing...' : 'Mark as Delivered'}
+                        </button>
+                      ),
+                      'activate': (
+                        <button
+                          key="activate"
+                          onClick={() => handleMarkAsActive(selectedOrder._id)}
+                          className="btn-indigo disabled:opacity-50 disabled:cursor-not-allowed"
+                          disabled={updatingOrderId === selectedOrder._id}
+                        >
+                          {updatingOrderId === selectedOrder._id ? 'Processing...' : 'Mark as Active'}
+                        </button>
+                      ),
+                      'complete': (
+                        <button
+                          key="complete"
+                          onClick={() => handleCompleteOrder(selectedOrder._id)}
+                          className="btn-gray disabled:opacity-50 disabled:cursor-not-allowed"
+                          disabled={updatingOrderId === selectedOrder._id}
+                        >
+                          {updatingOrderId === selectedOrder._id ? 'Processing...' : 'Mark as Completed'}
+                        </button>
+                      ),
+                      'cancel': (
+                        <button
+                          key="cancel"
+                          onClick={() => handleCancelOrder(selectedOrder._id)}
+                          className="btn-danger disabled:opacity-50 disabled:cursor-not-allowed"
+                          disabled={updatingOrderId === selectedOrder._id}
+                        >
+                          Cancel Order
+                        </button>
+                      )
+                    }
+                    return buttons[action]
+                  })}
+                </div>
               </div>
             </div>
           </div>
