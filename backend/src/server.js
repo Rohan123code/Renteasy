@@ -621,7 +621,87 @@ app.put('/api/admin/orders/:id/status', authMiddleware, adminMiddleware, async (
     res.status(500).json({ message: 'Server error' });
   }
 });
-
+// ========== ENHANCED REVENUE ENDPOINT (Optional) ==========
+app.get('/api/admin/revenue/monthly/detailed', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const { months = 6 } = req.query;
+    
+    const currentDate = new Date();
+    const revenueData = [];
+    let previousMonthRevenue = 0;
+    
+    for (let i = parseInt(months) - 1; i >= 0; i--) {
+      const targetDate = new Date(currentDate.getFullYear(), currentDate.getMonth() - i, 1);
+      const monthStart = new Date(targetDate.getFullYear(), targetDate.getMonth(), 1);
+      const monthEnd = new Date(targetDate.getFullYear(), targetDate.getMonth() + 1, 0);
+      
+      // Get monthly data
+      const monthlyData = await Order.aggregate([
+        {
+          $match: {
+            createdAt: { $gte: monthStart, $lte: monthEnd }
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            totalRevenue: { 
+              $sum: {
+                $cond: [
+                  { $in: ['$status', ['active', 'delivered', 'confirmed', 'completed']] },
+                  '$totalAmount',
+                  0
+                ]
+              }
+            },
+            pendingRevenue: {
+              $sum: {
+                $cond: [
+                  { $eq: ['$status', 'pending'] },
+                  '$totalAmount',
+                  0
+                ]
+              }
+            },
+            totalDeposits: { $sum: '$totalDeposit' },
+            orderCount: { $sum: 1 }
+          }
+        }
+      ]);
+      
+      const data = monthlyData[0] || {
+        totalRevenue: 0,
+        pendingRevenue: 0,
+        totalDeposits: 0,
+        orderCount: 0
+      };
+      
+      const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      const monthName = monthNames[targetDate.getMonth()];
+      
+      // Calculate growth percentage
+      const growthPercentage = previousMonthRevenue > 0 
+        ? ((data.totalRevenue - previousMonthRevenue) / previousMonthRevenue * 100).toFixed(1)
+        : 0;
+      
+      revenueData.push({
+        month: monthName,
+        revenue: data.totalRevenue,
+        pendingRevenue: data.pendingRevenue,
+        deposits: data.totalDeposits,
+        orders: data.orderCount,
+        growth: parseFloat(growthPercentage)
+      });
+      
+      previousMonthRevenue = data.totalRevenue;
+    }
+    
+    res.json(revenueData);
+  } catch (error) {
+    console.error('Detailed monthly revenue error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
 // ========== ADD THESE ADMIN USER MANAGEMENT ROUTES ==========
 // Get all users (admin)
 app.get('/api/admin/users', authMiddleware, adminMiddleware, async (req, res) => {
